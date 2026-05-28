@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import os
 from typing import Annotated, Any
 
 from fastmcp import Context, FastMCP
@@ -17,6 +18,7 @@ from mcp_atlassian.models.jira import JiraAttachment
 from mcp_atlassian.models.jira.common import JiraUser
 from mcp_atlassian.servers.dependencies import get_jira_fetcher
 from mcp_atlassian.utils.decorators import check_write_access
+from mcp_atlassian.utils.io import validate_safe_path
 from mcp_atlassian.utils.media import (
     ATTACHMENT_MAX_BYTES,
     fetch_and_encode_attachment,
@@ -1035,6 +1037,157 @@ async def get_issue_images(
         ),
     )
     return contents
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "attachments", "toolset:jira_attachments"},
+    annotations={"title": "List Issue Attachments", "readOnlyHint": True},
+)
+async def list_issue_attachments(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key (e.g., 'PROJ-123', 'ACV2-642')",
+            pattern=ISSUE_KEY_PATTERN,
+        ),
+    ],
+) -> str:
+    """List attachment metadata for a Jira issue without downloading.
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key.
+
+    Returns:
+        JSON array of attachment metadata objects.
+    """
+    jira = await get_jira_fetcher(ctx)
+    attachments = jira.get_issue_attachments(issue_key)
+
+    result = [att.to_simplified_dict() for att in attachments]
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@jira_mcp.tool(
+    tags={"jira", "read", "attachments", "toolset:jira_attachments"},
+    annotations={"title": "Download Attachment To File", "readOnlyHint": True},
+)
+async def download_attachment_to_file(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key (e.g., 'PROJ-123', 'ACV2-642')",
+            pattern=ISSUE_KEY_PATTERN,
+        ),
+    ],
+    attachment_id: Annotated[
+        str,
+        Field(
+            description="Attachment ID to download (e.g., '10234')",
+        ),
+    ],
+    destination_path: Annotated[
+        str,
+        Field(
+            description=(
+                "Full file path where the attachment should be saved. "
+                "Directories will be created automatically if they don't exist. "
+                "Example: 'C:/Work/downloads/report.pdf'"
+            ),
+        ),
+    ],
+    overwrite: Annotated[
+        bool,
+        Field(
+            description="Whether to overwrite the file if it already exists (default: true)",
+            default=True,
+        ),
+    ] = True,
+) -> str:
+    """Download a specific Jira attachment to a file on the filesystem.
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key.
+        attachment_id: Attachment ID to download.
+        destination_path: Full path where the attachment should be saved.
+        overwrite: Whether to overwrite existing file (default: true).
+
+    Returns:
+        JSON object with success status and file info.
+    """
+    jira = await get_jira_fetcher(ctx)
+
+    # Convert to absolute path if relative
+    if not os.path.isabs(destination_path):
+        destination_path = os.path.abspath(destination_path)
+
+    # Guard against path traversal
+    validate_safe_path(destination_path)
+
+    # Check if file exists and overwrite is False
+    if not overwrite and os.path.exists(destination_path):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"File already exists: {destination_path}. Set overwrite=true to overwrite.",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # Get attachments and find the one with matching ID
+    attachments = jira.get_issue_attachments(issue_key)
+    target = None
+    for att in attachments:
+        if str(att.id) == str(attachment_id):
+            target = att
+            break
+
+    if target is None:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"Attachment with ID '{attachment_id}' not found in issue {issue_key}",
+                "available_attachments": [str(a.id) for a in attachments],
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    if not target.url:
+        return json.dumps(
+            {"success": False, "error": f"No download URL for attachment {target.filename}"},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # Create directory if needed
+    os.makedirs(os.path.dirname(destination_path) or ".", exist_ok=True)
+
+    # Download the attachment
+    success = jira.download_attachment(target.url, destination_path)
+
+    if success:
+        file_size = os.path.getsize(destination_path)
+        return json.dumps(
+            {
+                "success": True,
+                "filename": target.filename,
+                "size": file_size,
+                "saved_to": destination_path,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+    else:
+        return json.dumps(
+            {"success": False, "error": f"Failed to download attachment {target.filename}"},
+            indent=2,
+            ensure_ascii=False,
+        )
 
 
 @jira_mcp.tool(

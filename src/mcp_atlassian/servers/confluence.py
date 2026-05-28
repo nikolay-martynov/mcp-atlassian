@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import mimetypes
+import os
 from typing import Annotated
 
 from fastmcp import Context, FastMCP
@@ -16,6 +17,7 @@ from mcp_atlassian.servers.dependencies import get_confluence_fetcher
 from mcp_atlassian.utils.decorators import (
     check_write_access,
 )
+from mcp_atlassian.utils.io import validate_safe_path
 from mcp_atlassian.utils.media import (
     ATTACHMENT_MAX_BYTES,
     fetch_and_encode_attachment,
@@ -2071,3 +2073,165 @@ async def get_page_images(
         ),
     )
     return contents
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "attachments", "toolset:confluence_attachments"},
+    annotations={"title": "List Content Attachments", "readOnlyHint": True},
+)
+async def list_content_attachments(
+    ctx: Context,
+    content_id: Annotated[
+        str,
+        Field(
+            description=(
+                "Confluence content ID (page or blog post) to list attachments for. "
+                "Numeric ID from URL (e.g., '123456789')"
+            )
+        ),
+        BeforeValidator(lambda x: str(x) if x is not None else None),
+    ],
+) -> str:
+    """List attachment metadata for Confluence content without downloading.
+
+    Args:
+        ctx: The FastMCP context.
+        content_id: Confluence content ID.
+
+    Returns:
+        JSON object with attachments array.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+    result = confluence_fetcher.get_content_attachments(content_id)
+
+    if not result.get("success"):
+        return json.dumps(
+            {"success": False, "error": result.get("error", "Failed to list attachments")},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    attachments = result.get("attachments", [])
+    formatted = [ConfluenceAttachment.from_api_response(att).to_simplified_dict() for att in attachments]
+    return json.dumps({"attachments": formatted}, indent=2, ensure_ascii=False)
+
+
+@confluence_mcp.tool(
+    tags={"confluence", "read", "attachments", "toolset:confluence_attachments"},
+    annotations={"title": "Download Attachment To File", "readOnlyHint": True},
+)
+async def download_confluence_attachment_to_file(
+    ctx: Context,
+    attachment_id: Annotated[
+        str,
+        Field(
+            description=(
+                "Attachment ID to download (e.g., 'att123456789'). "
+                "Find attachment IDs using list_content_attachments."
+            )
+        ),
+    ],
+    destination_path: Annotated[
+        str,
+        Field(
+            description=(
+                "Full file path where the attachment should be saved. "
+                "Directories will be created automatically if they don't exist. "
+                "Example: 'C:/Work/downloads/screenshot.png'"
+            ),
+        ),
+    ],
+    overwrite: Annotated[
+        bool,
+        Field(
+            description="Whether to overwrite the file if it already exists (default: true)",
+            default=True,
+        ),
+    ] = True,
+) -> str:
+    """Download a specific Confluence attachment to a file on the filesystem.
+
+    Args:
+        ctx: The FastMCP context.
+        attachment_id: Attachment ID to download.
+        destination_path: Full path where the attachment should be saved.
+        overwrite: Whether to overwrite existing file (default: true).
+
+    Returns:
+        JSON object with success status and file info.
+    """
+    confluence_fetcher = await get_confluence_fetcher(ctx)
+
+    # Convert to absolute path if relative
+    if not os.path.isabs(destination_path):
+        destination_path = os.path.abspath(destination_path)
+
+    # Guard against path traversal
+    validate_safe_path(destination_path)
+
+    # Check if file exists and overwrite is False
+    if not overwrite and os.path.exists(destination_path):
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"File already exists: {destination_path}. Set overwrite=true to overwrite.",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # Get attachment metadata to find download URL
+    try:
+        v2_adapter = confluence_fetcher._v2_adapter
+        if v2_adapter:
+            attachment_data = v2_adapter.get_attachment_by_id(attachment_id)
+        else:
+            base_url = confluence_fetcher.config.url.rstrip("/")
+            url = f"{base_url}/rest/api/content/{attachment_id}"
+            resp_meta = confluence_fetcher.confluence._session.get(url)
+            resp_meta.raise_for_status()
+            attachment_data = resp_meta.json()
+
+        download_url = attachment_data.get("_links", {}).get("download")
+        if not download_url:
+            return json.dumps(
+                {"success": False, "error": f"Could not find download URL for attachment {attachment_id}"},
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        download_url = resolve_relative_url(download_url, confluence_fetcher.config.url)
+    except Exception as e:
+        return json.dumps(
+            {"success": False, "error": f"Failed to get attachment metadata: {str(e)}"},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # Fetch the attachment content
+    data_bytes = confluence_fetcher.fetch_attachment_content(download_url)
+
+    if data_bytes is None:
+        return json.dumps(
+            {"success": False, "error": f"Failed to fetch attachment {attachment_id}"},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # Create directory if needed
+    os.makedirs(os.path.dirname(destination_path) or ".", exist_ok=True)
+
+    # Write the file
+    with open(destination_path, "wb") as f:
+        f.write(data_bytes)
+
+    return json.dumps(
+        {
+            "success": True,
+            "filename": os.path.basename(destination_path),
+            "size": len(data_bytes),
+            "saved_to": destination_path,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
