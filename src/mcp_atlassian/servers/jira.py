@@ -1536,9 +1536,6 @@ async def download_attachment_to_file(
     if not os.path.isabs(destination_path):
         destination_path = os.path.abspath(destination_path)
 
-    # Guard against path traversal
-    validate_safe_path(destination_path)
-
     # Check if file exists and overwrite is False
     if not overwrite and os.path.exists(destination_path):
         return json.dumps(
@@ -1576,30 +1573,34 @@ async def download_attachment_to_file(
             ensure_ascii=False,
         )
 
+    # Fetch the attachment content into memory
+    data_bytes = jira.fetch_attachment_content(target.url)
+
+    if data_bytes is None:
+        return json.dumps(
+            {"success": False, "error": f"Failed to fetch attachment {target.filename}"},
+            indent=2,
+            ensure_ascii=False,
+        )
+
     # Create directory if needed
     os.makedirs(os.path.dirname(destination_path) or ".", exist_ok=True)
 
-    # Download the attachment
-    success = jira.download_attachment(target.url, destination_path)
+    # Write the file
+    with open(destination_path, "wb") as f:
+        f.write(data_bytes)
 
-    if success:
-        file_size = os.path.getsize(destination_path)
-        return json.dumps(
-            {
-                "success": True,
-                "filename": target.filename,
-                "size": file_size,
-                "saved_to": destination_path,
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
-    else:
-        return json.dumps(
-            {"success": False, "error": f"Failed to download attachment {target.filename}"},
-            indent=2,
-            ensure_ascii=False,
-        )
+    file_size = os.path.getsize(destination_path)
+    return json.dumps(
+        {
+            "success": True,
+            "filename": target.filename,
+            "size": file_size,
+            "saved_to": destination_path,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
 
 
 @jira_mcp.tool(

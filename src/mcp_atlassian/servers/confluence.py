@@ -2775,9 +2775,6 @@ async def download_confluence_attachment_to_file(
     if not os.path.isabs(destination_path):
         destination_path = os.path.abspath(destination_path)
 
-    # Guard against path traversal
-    validate_safe_path(destination_path)
-
     # Check if file exists and overwrite is False
     if not overwrite and os.path.exists(destination_path):
         return json.dumps(
