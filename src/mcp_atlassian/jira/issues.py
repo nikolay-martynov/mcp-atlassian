@@ -33,6 +33,12 @@ logger = logging.getLogger("mcp-jira")
 _EPIC_LINK_ALIASES = frozenset({"epickey", "epic_link", "epiclink", "epic link"})
 _EPIC_NAME_FIELD_SCHEMA = "com.pyxis.greenhopper.jira:gh-epic-label"
 
+# Accepted values for the description_format argument. ``markdown`` keeps the
+# historical behavior (wiki markup is converted to Markdown on read and back on
+# write); ``wiki`` passes the stored Server/Data Center wiki markup through
+# unchanged, so a read-modify-write cycle preserves the original formatting.
+_DESCRIPTION_FORMATS = frozenset({"markdown", "wiki"})
+
 
 class IssuesMixin(
     JiraClient,
@@ -80,6 +86,33 @@ class IssuesMixin(
             )
             return description_adf
 
+    def _resolve_description_format(self, description_format: str | None) -> str:
+        """Validate the requested description format.
+
+        Args:
+            description_format: ``markdown`` (default) or ``wiki``.
+
+        Returns:
+            The normalized format name.
+
+        Raises:
+            ValueError: If the format is unknown, or ``wiki`` is requested on
+                Jira Cloud, which stores descriptions as ADF.
+        """
+        fmt = (description_format or "markdown").strip().lower()
+        if fmt not in _DESCRIPTION_FORMATS:
+            msg = (
+                f"Unsupported description_format '{description_format}'. "
+                "Use 'markdown' or 'wiki'."
+            )
+            raise ValueError(msg)
+        if fmt == "wiki" and self.config.is_cloud:
+            raise ValueError(
+                "description_format='wiki' is only supported on Jira "
+                "Server/Data Center; Jira Cloud stores descriptions as ADF."
+            )
+        return fmt
+
     def get_issue(
         self,
         issue_key: str,
@@ -88,6 +121,7 @@ class IssuesMixin(
         fields: str | list[str] | tuple[str, ...] | set[str] | None = None,
         properties: str | list[str] | None = None,
         update_history: bool = True,
+        description_format: str = "markdown",
     ) -> JiraIssue:
         """
         Get a Jira issue by key.
@@ -99,6 +133,9 @@ class IssuesMixin(
             fields: Fields to return (comma-separated string, list, tuple, set, or "*all")
             properties: Issue properties to return (comma-separated string or list)
             update_history: Whether to update the issue view history
+            description_format: ``markdown`` (default) converts the stored
+                wiki markup to Markdown; ``wiki`` returns the raw stored text
+                (Jira Server/Data Center only)
 
         Returns:
             JiraIssue model with issue data and metadata
@@ -107,6 +144,7 @@ class IssuesMixin(
             MCPAtlassianAuthenticationError: If authentication fails with the Jira API (401/403)
             Exception: If there is an error retrieving the issue
         """
+        description_format_name = self._resolve_description_format(description_format)
         try:
             # Obtain the projects filter from the config.
             # These should NOT be overridden by the request.
@@ -221,7 +259,11 @@ class IssuesMixin(
                 raw_description = fields_data["description"]
                 # Only clean string descriptions (wiki markup)
                 # Dict descriptions (ADF) are handled by the model
-                if isinstance(raw_description, str) and raw_description:
+                if (
+                    description_format_name != "wiki"
+                    and isinstance(raw_description, str)
+                    and raw_description
+                ):
                     fields_data["description"] = self._clean_text(raw_description)
 
             # Get comments if needed
@@ -605,6 +647,7 @@ class IssuesMixin(
         description: str = "",
         assignee: str | None = None,
         components: list[str] | None = None,
+        description_format: str = "markdown",
         **kwargs: Any,  # noqa: ANN401 - Dynamic field types are necessary for Jira API
     ) -> JiraIssue:
         """
@@ -617,6 +660,9 @@ class IssuesMixin(
             description: The issue description
             assignee: The username or account ID of the assignee
             components: List of component names to assign (e.g., ["Frontend", "API"])
+            description_format: ``markdown`` (default) converts the description
+                to Jira markup; ``wiki`` sends it as raw Server/Data Center
+                wiki markup
             **kwargs: Additional fields to set on the issue
 
         Returns:
@@ -625,6 +671,7 @@ class IssuesMixin(
         Raises:
             Exception: If there is an error creating the issue
         """
+        description_format_name = self._resolve_description_format(description_format)
         try:
             # Validate required fields
             if not project_key:
@@ -661,6 +708,9 @@ class IssuesMixin(
                     )
 
             # Prepare fields
+            description_format_name = self._resolve_description_format(
+                description_format
+            )
             fields: dict[str, Any] = {
                 "project": {"key": project_key},
                 "summary": summary,
@@ -671,7 +721,11 @@ class IssuesMixin(
 
             # Add description if provided (convert from Markdown to Jira format)
             if description:
-                fields["description"] = self._markdown_to_jira(description)
+                fields["description"] = (
+                    description
+                    if description_format_name == "wiki"
+                    else self._markdown_to_jira(description)
+                )
 
             # Resolve and set assignee in the create fields, and also store
             # the identifier for a post-creation assign_issue() call.
@@ -1239,6 +1293,7 @@ class IssuesMixin(
         issue_key: str,
         fields: dict[str, Any] | None = None,
         return_fields: str | list[str] | tuple[str, ...] | set[str] | None = None,
+        description_format: str = "markdown",
         **kwargs: Any,  # noqa: ANN401 - Dynamic field types are necessary for Jira API
     ) -> JiraIssue:
         """
@@ -1251,6 +1306,9 @@ class IssuesMixin(
                 update (comma-separated string, collection, or ``"*all"``).
                 None lets the API return its default field set. Narrowing this
                 reduces the size of the returned issue.
+            description_format: ``markdown`` (default) converts the description
+                to Jira markup; ``wiki`` sends it as raw Server/Data Center
+                wiki markup, preserving the stored formatting
             **kwargs: Additional fields to update. Special fields include:
                 - attachments: List of file paths to upload as attachments
                 - attachments_base64: List of dicts with 'filename' and
@@ -1267,6 +1325,7 @@ class IssuesMixin(
         Raises:
             Exception: If there is an error updating the issue
         """
+        description_format_name = self._resolve_description_format(description_format)
         try:
             # Validate required fields
             if not issue_key:
@@ -1282,9 +1341,10 @@ class IssuesMixin(
                 update_fields["description"], str
             ):
                 preserve_description_media = bool(update_fields["description"].strip())
-                update_fields["description"] = self._markdown_to_jira(
-                    update_fields["description"]
-                )
+                if description_format_name != "wiki":
+                    update_fields["description"] = self._markdown_to_jira(
+                        update_fields["description"]
+                    )
 
             # Resolve epic link aliases before processing kwargs
             kwargs_mutable = dict(kwargs)
@@ -1360,7 +1420,11 @@ class IssuesMixin(
                     preserve_description_media = isinstance(value, str) and bool(
                         value.strip()
                     )
-                    update_fields["description"] = self._markdown_to_jira(value)
+                    update_fields["description"] = (
+                        value
+                        if description_format_name == "wiki"
+                        else self._markdown_to_jira(value)
+                    )
                 else:
                     # Process regular fields using _process_additional_fields
                     # Create a temporary dict with just this field

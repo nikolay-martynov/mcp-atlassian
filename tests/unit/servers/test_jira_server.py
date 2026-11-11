@@ -58,6 +58,7 @@ def mock_jira_fetcher():
         comment_limit=10,
         properties=None,
         update_history=True,
+        description_format="markdown",
     ):
         if not issue_key:
             raise ValueError("Issue key is required")
@@ -128,6 +129,7 @@ def mock_jira_fetcher():
     ):
         if not project_key or project_key.strip() == "":
             raise ValueError("valid project is required")
+        additional_fields.pop("description_format", None)
         components_list = None
         if components:
             if isinstance(components, str):
@@ -158,7 +160,11 @@ def mock_jira_fetcher():
             "key": issue_key,
             "summary": "Updated Issue",
             "status": {"name": "Open"},
-            **{k: v for k, v in kwargs.items() if k not in ("fields", "status")},
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("fields", "status", "description_format")
+            },
         }
         return mock_issue
 
@@ -679,6 +685,7 @@ async def test_get_issue(jira_client, mock_jira_fetcher):
         comment_limit=10,
         properties=None,
         update_history=True,
+                            description_format="markdown",
     )
 
 
@@ -1043,6 +1050,7 @@ async def test_create_issue(jira_client, mock_jira_fetcher):
         assignee=None,
         components=["Frontend", "API"],
         priority={"name": "Medium"},
+                                    description_format="markdown",
     )
 
 
@@ -1139,6 +1147,7 @@ async def test_create_issue_accepts_json_string(jira_client, mock_jira_fetcher):
         description=None,
         assignee=None,
         components=None,
+        description_format="markdown",
         labels=["ai", "test"],
     )
 
@@ -1446,6 +1455,7 @@ async def test_get_issue_with_user_specific_fetcher_in_state(
         comment_limit=10,
         properties=None,
         update_history=True,
+        description_format="markdown",
     )
     result_data = json.loads(response.content[0].text)
     assert result_data["key"] == "USRST-1"
@@ -3095,7 +3105,7 @@ async def test_update_issue_comment_visibility_uses_separate_comment(
     mock_jira_fetcher.add_comment.assert_called_once_with(
         "TEST-123",
         "Restricted comment",
-        {"type": "group", "value": "jira-users"},
+        {"type": "group", "value": "jira-users"}
     )
 
 
@@ -3123,6 +3133,7 @@ async def test_update_issue_combines_fields_transition_comment_and_worklog(
     assert update_kwargs == {
         "issue_key": "TEST-123",
         "return_fields": "*all",
+        "description_format": "markdown",
         "summary": "Updated",
     }
     mock_jira_fetcher.transition_issue.assert_called_once_with(
@@ -3632,7 +3643,7 @@ async def test_add_comment(jira_client, mock_jira_fetcher):
     )
 
     mock_jira_fetcher.add_comment.assert_called_once_with(
-        "TEST-123", "Test comment body", None, public=None
+        "TEST-123", "Test comment body", None, public=None, content_format="markdown"
     )
 
     result = json.loads(response.content[0].text)
@@ -3658,7 +3669,7 @@ async def test_add_comment_ignores_empty_optional_fields(
     )
 
     mock_jira_fetcher.add_comment.assert_called_once_with(
-        "TEST-123", "Test comment body", None, public=False
+        "TEST-123", "Test comment body", None, public=False, content_format="markdown"
     )
 
     result = json.loads(response.content[0].text)
@@ -3675,7 +3686,7 @@ async def test_add_comment_accepts_comment_alias(jira_client, mock_jira_fetcher)
     )
 
     mock_jira_fetcher.add_comment.assert_called_once_with(
-        "TEST-123", "Test comment body", None, public=None
+        "TEST-123", "Test comment body", None, public=None, content_format="markdown"
     )
 
     result = json.loads(response.content[0].text)
@@ -3709,8 +3720,10 @@ async def test_add_comment_restricted_visibility_with_client_default_false(
     mock_jira_fetcher.add_comment.assert_called_once_with(
         "TEST-123",
         "Test comment body",
-        {"type": "role", "value": "Developer"},
+        {"type": "role",
+        "value": "Developer"},
         public=None,
+        content_format="markdown",
     )
 
     result = json.loads(response.content[0].text)
@@ -3734,9 +3747,27 @@ async def test_add_comment_forwards_false_for_internal_only_project(
     await jira_client.call_tool("jira_add_comment", base_args)
 
     assert mock_jira_fetcher.add_comment.call_args_list == [
-        call("TEST-123", "Test comment body", None, public=False),
-        call("TEST-123", "Test comment body", None, public=True),
-        call("TEST-123", "Test comment body", None, public=None),
+        call(
+            "TEST-123",
+            "Test comment body",
+            None,
+            public=False,
+            content_format="markdown",
+        ),
+        call(
+            "TEST-123",
+            "Test comment body",
+            None,
+            public=True,
+            content_format="markdown",
+        ),
+        call(
+            "TEST-123",
+            "Test comment body",
+            None,
+            public=None,
+            content_format="markdown",
+        ),
     ]
 
 
@@ -3757,9 +3788,27 @@ async def test_add_comment_preserves_explicit_false_on_ordinary_project(
     await jira_client.call_tool("jira_add_comment", base_args)
 
     assert mock_jira_fetcher.add_comment.call_args_list == [
-        call("TEST-123", "Test comment body", None, public=False),
-        call("TEST-123", "Test comment body", None, public=True),
-        call("TEST-123", "Test comment body", None, public=None),
+        call(
+            "TEST-123",
+            "Test comment body",
+            None,
+            public=False,
+            content_format="markdown",
+        ),
+        call(
+            "TEST-123",
+            "Test comment body",
+            None,
+            public=True,
+            content_format="markdown",
+        ),
+        call(
+            "TEST-123",
+            "Test comment body",
+            None,
+            public=None,
+            content_format="markdown",
+        ),
     ]
 
 
@@ -3779,7 +3828,7 @@ async def test_add_comment_public_true_keeps_servicedesk_routing(
     )
 
     mock_jira_fetcher.add_comment.assert_called_once_with(
-        "TEST-123", "Test comment body", None, public=True
+        "TEST-123", "Test comment body", None, public=True, content_format="markdown"
     )
 
 
@@ -3796,7 +3845,7 @@ async def test_edit_comment(jira_client, mock_jira_fetcher):
     )
 
     mock_jira_fetcher.edit_comment.assert_called_once_with(
-        "TEST-123", "10001", "Updated comment body", None
+        "TEST-123", "10001", "Updated comment body", None, content_format="markdown"
     )
 
     result = json.loads(response.content[0].text)
@@ -4707,6 +4756,7 @@ async def test_get_issue_use_display_names(jira_client, mock_jira_fetcher):
         comment_limit=10,
         properties=None,
         update_history=True,
+        description_format="markdown",
     ):
         mock_issue = MagicMock()
         mock_issue.to_simplified_dict.return_value = {
@@ -4810,6 +4860,7 @@ async def test_display_name_collision_with_include_key_preserves_both(
         comment_limit=10,
         properties=None,
         update_history=True,
+        description_format="markdown",
     ):
         mock_issue = MagicMock()
         mock_issue.to_simplified_dict.return_value = {
@@ -4875,6 +4926,7 @@ async def test_display_name_collision_with_setdefault_include_key(
         comment_limit=10,
         properties=None,
         update_history=True,
+        description_format="markdown",
     ):
         mock_issue = MagicMock()
         mock_issue.to_simplified_dict.return_value = {

@@ -13,6 +13,14 @@ class TestLinksMixin:
     def links_mixin(self, mock_config, mock_atlassian_jira):
         mixin = LinksMixin(config=mock_config)
         mixin.jira = mock_atlassian_jira
+        # Link creation resolves the type name against the instance's types.
+        mixin.jira.get.return_value = {
+            "issueLinkTypes": [
+                {"id": "10000", "name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+                {"id": "10001", "name": "Duplicate", "inward": "is duplicated by", "outward": "duplicates"},
+                {"id": "10002", "name": "Relate", "inward": "relates to", "outward": "relates to"},
+            ]
+        }
         return mixin
 
     def test_get_issue_link_types_success(self, links_mixin):

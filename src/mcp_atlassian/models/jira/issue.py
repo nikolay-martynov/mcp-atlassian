@@ -114,6 +114,7 @@ class JiraIssue(ApiModel, TimestampMixin):
     worklog: dict | None = None
     changelogs: list[JiraChangelog] = Field(default_factory=list)
     issuelinks: list[JiraIssueLink] = Field(default_factory=list)
+    rendered: dict[str, Any] | None = None
 
     def __getattribute__(self, name: str) -> Any:
         """
@@ -539,6 +540,7 @@ class JiraIssue(ApiModel, TimestampMixin):
             requested_fields=requested_fields_param,
             changelogs=changelogs,
             issuelinks=cls._extract_issue_links(fields),
+            rendered=cls._extract_rendered_fields(data),
         )
         allowed_projects = kwargs.get("allowed_projects")
         if allowed_projects:
@@ -606,6 +608,10 @@ class JiraIssue(ApiModel, TimestampMixin):
         # Add description if available and requested
         if self.description and should_include_field("description"):
             result["description"] = self.description
+
+        # Add rendered HTML when the caller expanded renderedFields
+        if self.rendered:
+            result["rendered"] = self.rendered
 
         # Add environment if available and requested
         if self.environment and should_include_field("environment"):
@@ -1025,6 +1031,32 @@ class JiraIssue(ApiModel, TimestampMixin):
                     return field_value.get("key") or field_value.get("value")
                 return str(field_value)
         return None
+
+    @staticmethod
+    def _extract_rendered_fields(data: dict[str, Any]) -> dict[str, Any] | None:
+        """Extract the ``renderedFields`` expansion from an issue response.
+
+        Jira returns rendered HTML as a top-level ``renderedFields`` object
+        when the request expands ``renderedFields``. Only the text-bearing
+        entries are kept: the rest (dates, links, attachments) duplicate the
+        plain fields and would inflate the response.
+
+        Args:
+            data: The raw issue response from the Jira API.
+
+        Returns:
+            The filtered rendered fields, or None when the expansion was not
+            requested or returned nothing useful.
+        """
+        rendered = data.get("renderedFields")
+        if not isinstance(rendered, dict):
+            return None
+        kept = {
+            key: value
+            for key, value in rendered.items()
+            if key in {"description", "environment", "comment"} and value
+        }
+        return kept or None
 
     @staticmethod
     def _extract_issue_links(fields: dict[str, Any]) -> list[JiraIssueLink]:

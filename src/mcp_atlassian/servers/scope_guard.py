@@ -148,6 +148,15 @@ JIRA_SCOPE_POLICY = ScopePolicy(
             "properties",
             "update_history",
             "include",
+            # Payload format option for the description of a checked issue.
+            "description_format",
+            "content_format",
+            # Output and payload options of the attachment download tool.
+            "attachment_id",
+            "destination_path",
+            "overwrite",
+            # Output option of the project components tool.
+            "compact",
             # Epic children are fetched through SearchMixin, which ANDs the
             # allowlist into the JQL.
             "epic_summary_children",
@@ -285,6 +294,9 @@ CONFLUENCE_SCOPE_POLICY = ScopePolicy(
             "edit_groups",
             "new_title",
             "copy_attachments",
+            # Output options of the attachment download tool.
+            "destination_path",
+            "overwrite",
         }
     ),
 )

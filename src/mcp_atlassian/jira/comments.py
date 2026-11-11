@@ -30,12 +30,18 @@ from requests.exceptions import HTTPError
 
 from ..models.jira.adf import adf_to_text
 from ..utils import parse_date
+from ..utils.decorators import handle_auth_errors
 from .client import JiraClient
 from .config import normalize_project_key
 
 logger = logging.getLogger("mcp-jira")
 
 _CANONICAL_ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
+
+# Accepted values for the content_format argument. ``markdown`` keeps the
+# historical behavior (the body is converted to Jira markup); ``wiki`` posts
+# the body as raw Server/Data Center wiki markup.
+_COMMENT_FORMATS = frozenset({"markdown", "wiki"})
 
 
 def _http_status(exc: BaseException) -> int | None:
@@ -57,6 +63,33 @@ def _http_status(exc: BaseException) -> int | None:
 
 class CommentsMixin(JiraClient):
     """Mixin for Jira comment operations."""
+
+    def _resolve_comment_format(self, content_format: str | None) -> str:
+        """Validate the requested comment body format.
+
+        Args:
+            content_format: ``markdown`` (default) or ``wiki``.
+
+        Returns:
+            The normalized format name.
+
+        Raises:
+            ValueError: If the format is unknown, or ``wiki`` is requested on
+                Jira Cloud, which stores comment bodies as ADF.
+        """
+        fmt = (content_format or "markdown").strip().lower()
+        if fmt not in _COMMENT_FORMATS:
+            msg = (
+                f"Unsupported content_format '{content_format}'. "
+                "Use 'markdown' or 'wiki'."
+            )
+            raise ValueError(msg)
+        if fmt == "wiki" and self.config.is_cloud:
+            raise ValueError(
+                "content_format='wiki' is only supported on Jira "
+                "Server/Data Center; Jira Cloud stores comment bodies as ADF."
+            )
+        return fmt
 
     @staticmethod
     def _is_canonical_issue_key(issue_key: str) -> bool:
@@ -359,6 +392,7 @@ class CommentsMixin(JiraClient):
         comment: str,
         visibility: dict[str, str] | None = None,
         public: bool | None = None,
+        content_format: str = "markdown",
     ) -> dict[str, Any]:
         """Add a comment to an issue.
 
@@ -390,6 +424,7 @@ class CommentsMixin(JiraClient):
                 issue is a request, and public is not exactly False
             Exception: If there is an error adding the comment
         """
+        content_format_name = self._resolve_comment_format(content_format)
         # One classification step decides whether the issue has a customer
         # portal audience at all. It is needed when the caller set `public`
         # (which routes to the ServiceDesk API) or when the project is listed
@@ -443,8 +478,13 @@ class CommentsMixin(JiraClient):
             return self._add_servicedesk_comment(issue_key, comment, public)
 
         try:
-            # Convert Markdown to Jira's markup format
-            jira_formatted_comment = self._markdown_to_jira(comment)
+            # Convert Markdown to Jira's markup format unless the caller
+            # already supplied raw wiki markup
+            jira_formatted_comment = (
+                comment
+                if content_format_name == "wiki"
+                else self._markdown_to_jira(comment)
+            )
 
             # Use v3 API on Cloud for ADF comments
             if isinstance(jira_formatted_comment, dict) and self.config.is_cloud:
@@ -574,6 +614,7 @@ class CommentsMixin(JiraClient):
         comment_id: str,
         comment: str,
         visibility: dict[str, str] | None = None,
+        content_format: str = "markdown",
     ) -> dict[str, Any]:
         """
         Edit an existing comment on an issue.
@@ -583,6 +624,9 @@ class CommentsMixin(JiraClient):
             comment_id: The ID of the comment to edit
             comment: Updated comment text (in Markdown format)
             visibility: (optional) Restrict comment visibility (e.g. {"type":"group","value":"jira-users"})
+            content_format: ``markdown`` (default) converts the body to Jira
+                markup; ``wiki`` posts it as raw Server/Data Center wiki
+                markup
 
         Returns:
             The updated comment details
@@ -596,10 +640,16 @@ class CommentsMixin(JiraClient):
                 an internal-only project
         """
         self._enforce_internal_only_edit(issue_key, comment_id)
+        content_format_name = self._resolve_comment_format(content_format)
 
         try:
-            # Convert Markdown to Jira's markup format
-            jira_formatted_comment = self._markdown_to_jira(comment)
+            # Convert Markdown to Jira's markup format unless the caller
+            # already supplied raw wiki markup
+            jira_formatted_comment = (
+                comment
+                if content_format_name == "wiki"
+                else self._markdown_to_jira(comment)
+            )
 
             # Use v3 API on Cloud for ADF comments
             if isinstance(jira_formatted_comment, dict) and self.config.is_cloud:
@@ -631,3 +681,35 @@ class CommentsMixin(JiraClient):
                 f"Error editing comment {comment_id} on issue {issue_key}: {str(e)}"
             )
             raise Exception(f"Error editing comment: {str(e)}") from e
+
+    @handle_auth_errors("Jira API")
+    def delete_comment(self, issue_key: str, comment_id: str) -> dict[str, Any]:
+        """Delete a comment from an issue.
+
+        Args:
+            issue_key: The issue key (e.g. 'PROJ-123')
+            comment_id: The ID of the comment to delete
+
+        Returns:
+            Confirmation with the issue key and the deleted comment ID
+
+        Raises:
+            MCPAtlassianAuthenticationError: If authentication fails
+                with the Jira API (401/403)
+            Exception: If there is an error deleting the comment
+        """
+        try:
+            self.jira.delete(f"rest/api/2/issue/{issue_key}/comment/{comment_id}")
+            return {
+                "issue_key": issue_key,
+                "comment_id": str(comment_id),
+                "deleted": True,
+            }
+        except HTTPError:
+            raise  # let decorator handle auth errors
+        except Exception as e:
+            logger.error(
+                f"Error deleting comment {comment_id} on issue {issue_key}: {str(e)}"
+            )
+            msg = f"Error deleting comment: {str(e)}"
+            raise Exception(msg) from e

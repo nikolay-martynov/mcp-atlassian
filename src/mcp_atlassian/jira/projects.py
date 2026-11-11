@@ -166,19 +166,41 @@ class ProjectsMixin(JiraClient, SearchOperationsProto):
         except Exception:
             return False
 
-    def get_project_components(self, project_key: str) -> list[dict[str, Any]]:
+    def get_project_components(
+        self, project_key: str, *, compact: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Get all components for a project.
 
         Args:
             project_key: The project key
+            compact: When true, return only the component id, name and lead
+                display name. The full response carries leads, avatars and
+                nested objects and can reach hundreds of kilobytes.
 
         Returns:
             List of component data dictionaries
         """
         try:
             components = self.jira.get_project_components(key=project_key)
-            return components if isinstance(components, list) else []
+            if not isinstance(components, list):
+                return []
+            if not compact:
+                return components
+            compact_components: list[dict[str, Any]] = []
+            for component in components:
+                if not isinstance(component, dict):
+                    continue
+                lead = component.get("lead")
+                lead_name = lead.get("displayName") if isinstance(lead, dict) else None
+                compact_components.append(
+                    {
+                        "id": component.get("id"),
+                        "name": component.get("name"),
+                        "lead": lead_name,
+                    }
+                )
+            return compact_components
 
         except Exception as e:
             logger.error(

@@ -6,7 +6,7 @@ import binascii
 import json
 import logging
 import os
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastmcp import Context
 from mcp.types import BlobResourceContents, EmbeddedResource, ImageContent, TextContent
@@ -795,6 +795,20 @@ async def get_issue(
             default=False,
         ),
     ] = False,
+    description_format: Annotated[
+        Literal["markdown", "wiki"],
+        Field(
+            description=(
+                "(Optional) How to return the description. 'markdown' "
+                "(default) converts the stored Jira wiki markup to "
+                "Markdown; 'wiki' returns the raw stored text unchanged "
+                "(Jira Server/Data Center only). Use 'wiki' before writing "
+                "the description back with the same format, so the stored "
+                "formatting survives the round trip."
+            ),
+            default="markdown",
+        ),
+    ] = "markdown",
 ) -> str:
     """Get details of a specific Jira issue.
 
@@ -820,6 +834,7 @@ async def get_issue(
             ``epic_summary`` (aggregate-only by default).
         max_epic_children: Cap on children aggregated for ``epic_summary``.
         use_display_names: Opt into human-readable custom field keys.
+        description_format: 'markdown' (default) or raw 'wiki' text.
 
     Returns:
         JSON string representing the Jira issue object.
@@ -855,6 +870,7 @@ async def get_issue(
         comment_limit=comment_limit,
         properties=properties.split(",") if properties else None,
         update_history=update_history,
+        description_format=description_format,
     )
     if use_display_names:
         include_output_keys = {
@@ -2119,6 +2135,18 @@ async def create_issue(
             default=None,
         ),
     ] = None,
+    description_format: Annotated[
+        Literal["markdown", "wiki"],
+        Field(
+            description=(
+                "(Optional) How to interpret the description. 'markdown' "
+                "(default) converts it to Jira markup; 'wiki' sends it as "
+                "raw Server/Data Center wiki markup (Jira Server/Data "
+                "Center only)."
+            ),
+            default="markdown",
+        ),
+    ] = "markdown",
 ) -> str:
     """Create a new Jira issue with optional Epic link or parent for subtasks.
 
@@ -2131,6 +2159,7 @@ async def create_issue(
         description: Issue description in Markdown format.
         components: Comma-separated list of component names.
         additional_fields: JSON string of additional fields.
+        description_format: 'markdown' (default) or raw 'wiki' text.
 
     Returns:
         JSON string representing the created issue object.
@@ -2155,6 +2184,7 @@ async def create_issue(
         description=description,
         assignee=assignee,
         components=components_list,
+        description_format=description_format,
         **extra_fields,
     )
     result = issue.to_simplified_dict()
@@ -2462,6 +2492,19 @@ async def update_issue(
             default="*all",
         ),
     ] = "*all",
+    description_format: Annotated[
+        Literal["markdown", "wiki"],
+        Field(
+            description=(
+                "(Optional) How to interpret the 'description' field. "
+                "'markdown' (default) converts it to Jira markup; 'wiki' "
+                "sends it as raw Server/Data Center wiki markup, so a "
+                "description read with description_format='wiki' can be "
+                "written back unchanged."
+            ),
+            default="markdown",
+        ),
+    ] = "markdown",
 ) -> str:
     """Update an issue and optionally transition, comment, and log work.
 
@@ -2485,6 +2528,7 @@ async def update_issue(
         worklog: Optional time spent to log.
         worklog_started: Optional ISO datetime when the worklog started.
         return_fields: Fields to include in the returned issue. Comma-separated list to trim the response and save tokens, or '*all' (default) for the full issue.
+        description_format: 'markdown' (default) or raw 'wiki' text.
 
     Returns:
         JSON string representing the updated issue object and attachment results.
@@ -2554,7 +2598,10 @@ async def update_issue(
     if all_updates:
         try:
             issue = jira.update_issue(
-                issue_key=issue_key, return_fields=return_fields_list, **all_updates
+                issue_key=issue_key,
+                return_fields=return_fields_list,
+                description_format=description_format,
+                **all_updates,
             )
             if any(
                 key not in ("attachments", "attachments_base64") for key in all_updates
@@ -2887,6 +2934,18 @@ async def add_comment(
             )
         ),
     ] = None,
+    content_format: Annotated[
+        Literal["markdown", "wiki"],
+        Field(
+            description=(
+                "(Optional) How to interpret the comment body. 'markdown' "
+                "(default) converts it to Jira markup; 'wiki' posts it as "
+                "raw Server/Data Center wiki markup (Jira Server/Data "
+                "Center only)."
+            ),
+            default="markdown",
+        ),
+    ] = "markdown",
 ) -> str:
     """Add a comment to a Jira issue.
 
@@ -2898,6 +2957,7 @@ async def add_comment(
         public: (Optional) For JSM requests. True = customer-visible,
             False = internal/agent-only. Uses ServiceDesk API; ignored
             on an issue that is not a JSM customer request.
+        content_format: 'markdown' (default) or raw 'wiki' text.
 
     Returns:
         JSON string representing the added comment object.
@@ -2924,7 +2984,13 @@ async def add_comment(
     public_value = public
     if public is False and visibility_dict is not None:
         public_value = None
-    result = jira.add_comment(issue_key, body, visibility_dict, public=public_value)
+    result = jira.add_comment(
+        issue_key,
+        body,
+        visibility_dict,
+        public=public_value,
+        content_format=content_format,
+    )
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -2950,6 +3016,18 @@ async def edit_comment(
             description='(Optional) Comment visibility as JSON string (e.g. \'{"type":"group","value":"jira-users"}\')'
         ),
     ] = None,
+    content_format: Annotated[
+        Literal["markdown", "wiki"],
+        Field(
+            description=(
+                "(Optional) How to interpret the comment body. 'markdown' "
+                "(default) converts it to Jira markup; 'wiki' posts it as "
+                "raw Server/Data Center wiki markup (Jira Server/Data "
+                "Center only)."
+            ),
+            default="markdown",
+        ),
+    ] = "markdown",
 ) -> str:
     """Edit an existing comment on a Jira issue.
 
@@ -2959,6 +3037,7 @@ async def edit_comment(
         comment_id: The ID of the comment to edit.
         body: Updated comment text in Markdown.
         visibility: (Optional) Comment visibility as JSON string.
+        content_format: 'markdown' (default) or raw 'wiki' text.
 
     Returns:
         JSON string representing the updated comment object.
@@ -2971,7 +3050,49 @@ async def edit_comment(
     """
     jira = await get_jira_fetcher(ctx)
     visibility_dict = _parse_visibility(visibility)
-    result = jira.edit_comment(issue_key, comment_id, body, visibility_dict)
+    result = jira.edit_comment(
+        issue_key,
+        comment_id,
+        body,
+        visibility_dict,
+        content_format=content_format,
+    )
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@jira_mcp.tool(
+    tags={"jira", "write", "toolset:jira_comments"},
+    annotations={"title": "Delete Comment", "destructiveHint": True},
+)
+@check_write_access
+async def delete_comment(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key (e.g., 'PROJ-123', 'ACV2-642')",
+            pattern=ISSUE_KEY_PATTERN,
+        ),
+    ],
+    comment_id: Annotated[
+        str, Field(description="The ID of the comment to delete")
+    ],
+) -> str:
+    """Delete a comment from a Jira issue.
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key.
+        comment_id: The ID of the comment to delete.
+
+    Returns:
+        JSON string confirming the deletion.
+
+    Raises:
+        ValueError: If in read-only mode or the Jira client is unavailable.
+    """
+    jira = await get_jira_fetcher(ctx)
+    result = jira.delete_comment(issue_key, comment_id)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -3733,10 +3854,21 @@ async def get_project_components(
             pattern=PROJECT_KEY_PATTERN,
         ),
     ],
+    compact: Annotated[
+        bool,
+        Field(
+            description=(
+                "(Optional) When true, return only each component's id, name "
+                "and lead display name. The full response includes leads, "
+                "avatars and nested objects and can be very large."
+            ),
+            default=False,
+        ),
+    ] = False,
 ) -> str:
     """Get all components for a specific Jira project."""
     jira = await get_jira_fetcher(ctx)
-    components = jira.get_project_components(project_key)
+    components = jira.get_project_components(project_key, compact=compact)
     return json.dumps(components, indent=2, ensure_ascii=False)
 
 

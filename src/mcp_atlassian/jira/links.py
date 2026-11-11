@@ -87,6 +87,40 @@ class LinksMixin(JiraClient):
                     "the relevant issue."
                 )
 
+    def _resolve_link_type_name(self, requested: str) -> str:
+        """Return the Jira link type name matching ``requested`` loosely.
+
+        Jira spells link types in the instance's language and form (for
+        example "Relate", not "Relates"), so an exact match is not the only
+        reasonable input. An exact match wins; otherwise a case-insensitive
+        match, then a singular/plural match is accepted.
+
+        Args:
+            requested: The link type name supplied by the caller.
+
+        Returns:
+            The matching link type name as spelled by Jira.
+
+        Raises:
+            ValueError: If no link type matches. The message lists the
+                available names.
+        """
+        names = [link_type.name for link_type in self.get_issue_link_types()]
+        if requested in names:
+            return requested
+        lowered = requested.strip().lower()
+        for name in names:
+            if name.lower() == lowered:
+                return name
+        singular = lowered.rstrip("s")
+        for name in names:
+            if name.lower().rstrip("s") == singular:
+                return name
+        raise ValueError(
+            f"No issue link type named '{requested}'. Available types: "
+            + ", ".join(sorted(names))
+        )
+
     @handle_auth_errors("Jira API")
     def create_issue_link(self, data: dict[str, Any]) -> dict[str, Any]:
         """
@@ -131,6 +165,14 @@ class LinksMixin(JiraClient):
             self._enforce_internal_only_link_comment(
                 data["inwardIssue"]["key"], data["outwardIssue"]["key"]
             )
+
+        # Accept a loosely spelled link type name ("Relates" for "Relate")
+        # and send Jira the name it knows.
+        data = dict(data)
+        data["type"] = {
+            **data["type"],
+            "name": self._resolve_link_type_name(str(data["type"].get("name", ""))),
+        }
 
         try:
             # Create the issue link
